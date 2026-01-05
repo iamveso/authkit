@@ -22,7 +22,7 @@ type Argon2Configuration struct {
 	KeyLength  uint32
 }
 
-var timeCost uint32 = 2
+var timeCost uint32 = 3
 var memoryCost uint32 = 64 * 1024
 var threads uint8 = 4
 var keyLength uint32 = 32

@@ -12,27 +12,13 @@ const (
 	ErrorInvalidCredentials string = "invalid credentials"
 )
 
-type AuthenticationStrategy string
-
-func (as AuthenticationStrategy) isValid() bool {
-	switch as {
-	case Sessions, Tokens:
-		return true
-	}
-	return false
+type AuthKit[U AuthKitUser] struct {
+	Hasher     PasswordHasher
+	Storage    Store[U]
+	JwtManager internal.AuthKitJwtManager
 }
 
-const (
-	Sessions AuthenticationStrategy = "session"
-	Tokens   AuthenticationStrategy = "token"
-)
-
-type AuthKit struct {
-	Hasher  PasswordHasher
-	Storage Store
-}
-
-type Option func(*AuthKit)
+type Option[U AuthKitUser] func(*AuthKit[U])
 
 type PasswordHasher interface {
 	Hash(password string) (string, error)
@@ -40,9 +26,15 @@ type PasswordHasher interface {
 	DummyHash()
 }
 
-func WithHasher(hasher PasswordHasher) Option {
-	return func(ak *AuthKit) {
+func WithHasher[U AuthKitUser](hasher PasswordHasher) Option[U] {
+	return func(ak *AuthKit[U]) {
 		ak.Hasher = hasher
+	}
+}
+
+func WithJwtConfig[U AuthKitUser](jwtManager internal.AuthKitJwtManager) Option[U] {
+	return func(ak *AuthKit[U]) {
+		ak.JwtManager = jwtManager
 	}
 }
 
@@ -50,13 +42,28 @@ type AuthKitUser interface {
 	GetPassword() string
 }
 
-type Store interface {
-	FindUserByIdentifier(identifier string) (AuthKitUser, error)
+type Store[U AuthKitUser] interface {
+	FindUserByIdentifier(identifier string) (U, error)
 }
 
-type AuthenticationDetails struct {
-	Session sessions.Session
-	Token   string
+type tokenConfig struct {
+	secret string
+	issuer string
+}
+
+type sessionConfig struct{}
+type AuthenticationDetails[U AuthKitUser] struct {
+	Session       sessions.Session
+	Token         string
+	tokenConfig   tokenConfig
+	sessionConfig sessionConfig
+	User          U
+}
+
+func (a *AuthenticationDetails[U]) GenerateSession() {}
+
+func (a *AuthenticationDetails[U]) GenerateToken(ttl time.Duration, customClaims any) (string, error) {
+	return internal.GenerateToken(&internal.AuthKitJwtManager{Issuer: a.tokenConfig.issuer, Secret: a.tokenConfig.secret}, ttl, customClaims)
 }
 
 type AuthKitSession struct {
@@ -68,11 +75,15 @@ type AuthKitSession struct {
 	IsRevoked bool      `json:"is_revoked"`
 }
 
-func NewAuthKit(store Store, opts ...Option) *AuthKit {
+func NewAuthKit[U AuthKitUser](store Store[U], secret string, opts ...Option[U]) *AuthKit[U] {
 	// defaults
-	authkit := &AuthKit{
+	authkit := &AuthKit[U]{
 		Storage: store,
 		Hasher:  &internal.DefaultPasswordHasher{},
+		JwtManager: internal.AuthKitJwtManager{
+			Issuer: "iamveso-lib",
+			Secret: secret,
+		},
 	}
 	for _, opt := range opts {
 		opt(authkit)
@@ -80,36 +91,33 @@ func NewAuthKit(store Store, opts ...Option) *AuthKit {
 	return authkit
 }
 
-func (ak *AuthKit) HashPassword(password string) (string, error) {
+func (ak *AuthKit[U]) HashPassword(password string) (string, error) {
 	return ak.Hasher.Hash(password)
 }
 
 // Identifier is either username, phone number or some other form of identification that is unique in the db
-func (ak *AuthKit) PasswordAuthenticator(identifier string, password string, strategy AuthenticationStrategy) (AuthenticationDetails, error) {
-	var authenticationDetails = AuthenticationDetails{}
+func (ak *AuthKit[U]) PasswordAuthenticator(identifier string, password string) (AuthenticationDetails[U], error) {
+	var authenticationDetails = AuthenticationDetails[U]{}
 	user, err := ak.Storage.FindUserByIdentifier(identifier)
-	if err != nil || !strategy.isValid() {
+	if err != nil {
 		ak.Hasher.DummyHash() //to prevent timing attacks
-		return authenticationDetails, err
+		return authenticationDetails, fmt.Errorf(ErrorInvalidCredentials)
 	}
 
 	if !ak.Hasher.Verify(password, user.GetPassword()) {
 		return authenticationDetails, fmt.Errorf(ErrorInvalidCredentials)
 	}
-
-	switch strategy {
-	case Sessions:
-	case Tokens:
-	}
+	authenticationDetails.User = user
+	authenticationDetails.tokenConfig = tokenConfig{issuer: ak.JwtManager.Issuer, secret: ak.JwtManager.Secret}
 	return authenticationDetails, nil
 }
 
-// func (ak *AuthKit) GenerateOTP() string {}
+// func (ak *AuthKit[U]) GenerateOTP() string {}
 
-// func (ak *AuthKit) PasswordlessGenrateEmailLink() (string, error) {}
+// func (ak *AuthKit[U]) PasswordlessGenrateEmailLink() (string, error) {}
 
-// func (ak *AuthKit) PasswordlessVerifyEmailLink() error {}
+// func (ak *AuthKit[U]) PasswordlessVerifyEmailLink() error {}
 
-// func (ak *AuthKit) ValidateSession(session *sessions.Session) (AuthKitSession, error) {}
+// func (ak *AuthKit[U]) ValidateSession(session *sessions.Session) (AuthKitSession, error) {}
 
-// func (ak *AuthKit) VerifyToken(token string) (map[string]any, error) {}
+// func (ak *AuthKit[U]) VerifyToken(token string) (map[string]any, error) {}
